@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Sabina/Code</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+</head>
+<body class="bg-[#1e1e1e] text-[#ccc] h-screen flex flex-col overflow-hidden">
+
+<!-- ===== TOOLBAR ===== -->
+<div class="bg-[#181818] border-b border-[#2d2d2d] p-2 flex flex-wrap gap-2 items-center text-xs">
+  <span class="font-bold text-white"><i class="bi bi-cpu"></i> Sabina/Code</span>
+  
+  <!-- El modelo que elegís aquí se usa PARA TODO: autocompletado Y chat -->
+  <select id="modelSelect" class="bg-[#252526] border border-[#3d3d3d] rounded px-2 py-1.5 min-w-[240px]">
+    <option value="groq-openai/gpt-oss-20b" selected>Groq oss-gpt-20B (por defecto)</option>
+    <option value="groq-openai/gpt-oss-120b">Groq oss-gpt-120B</option>
+    <option value="groq-llama-3.3-70b">Groq Llama 3.3 70B</option>
+    <option value="groq-qwen/qwen3.8-27b">Groq Qwen3.8 27B</option>
+    <option value="groq-llama-3.1-8b">Groq Llama 3.1 8B (rápido)</option>
+  </select>
+  
+  <select id="langSelect" onchange="setLang()" class="bg-[#252526] border border-[#3d3d3d] rounded px-2 py-1.5">
+    <option value="python">Python</option>
+    <option value="javascript">JavaScript</option>
+    <option value="html">HTML</option>
+    <option value="cpp">C++</option>
+    <option value="typescript">TypeScript</option>
+    <option value="json">JSON</option>
+  </select>
+  <input id="groqKey" placeholder="gsk_... Groq API key" class="bg-[#252526] border border-[#3d3d3d] rounded px-2 py-1.5 w-44"/>
+  <button onclick="saveKeys()" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded font-bold">Guardar</button>
+  <div class="ml-auto flex gap-2">
+    <button onclick="runCode()" title="Ejecutar (JS/HTML)"><i class="bi bi-play-fill text-green-400"></i></button>
+    <button onclick="downloadCode()" title="Descargar archivo"><i class="bi bi-download text-blue-400"></i></button>
+  </div>
+</div>
+
+<!-- ===== MAIN LAYOUT ===== -->
+<div class="flex flex-1 overflow-hidden">
+  
+  <!-- EDITOR -->
+  <div class="flex-1 flex flex-col border-r border-[#2d2d2d]">
+    <div class="h-8 bg-[#252526] flex items-center px-3 text-xs">
+      <span id="fileName" class="bg-[#1e1e1e] px-3 py-1 border-t-2 border-blue-500">main.py</span>
+      <span id="ghostStatus" class="ml-auto text-zinc-500">TAB = aceptar</span>
+    </div>
+    <div id="monaco" class="flex-1"></div>
+    <iframe id="runner" class="hidden border-t border-[#2d2d2d] bg-white" style="height:200px;width:100%"></iframe>
+  </div>
+  
+  <!-- CHAT -->
+  <div class="w-[380px] bg-[#252526] flex flex-col">
+    <div class="p-3 font-bold text-xs uppercase tracking-widest border-b border-[#2d2d3d] flex justify-between items-center">
+      Chat
+      <label class="font-normal normal-case tracking-normal text-[10px] text-zinc-400 flex items-center gap-1 cursor-pointer">
+        <input type="checkbox" id="autoInsert" checked/> Auto-insertar
+      </label>
+    </div>
+    <div id="chat" class="flex-1 overflow-y-auto p-3 space-y-3 text-sm">
+      <div class="bg-[#2d2d2d] p-3 rounded-lg">
+        <b>Modelo actual:</b> <span id="currentModelDisplay">oss-gpt-20B</span><br>
+        Pon tu key Groq arriba → Guardar.<br>
+        El mismo modelo responde el autocompletado Y el chat.
+      </div>
+    </div>
+    <div class="p-2 border-t border-[#2d2d2d] flex gap-2">
+      <input id="chatInput" placeholder="Pide código o pregunta..." class="flex-1 bg-[#3c3c3c] rounded px-3 py-2 text-sm outline-none"/>
+      <button onclick="askChat()" class="bg-blue-600 px-3 rounded"><i class="bi bi-send"></i></button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs/loader.min.js"></script>
+<script>
+let editor, ghost="";
+
+// ===== MODELS =====
+const MODELS = {
+  "groq-llama-3.3-70b": { model:"llama-3.3-70b-versatile" },
+  "groq-llama-3.1-8b":  { model:"llama-3.1-8b-instant" },
+  "groq-openai/gpt-oss-120b": { model:"openai/gpt-oss-120b" },
+  "groq-openai/gpt-oss-20b":  { model:"openai/gpt-oss-20b" },
+  "groq-qwen/qwen3.8-27b": { model:"qwen/qwen3.8-27b" },
+};
+
+// Muestra el nombre corto del modelo actual en el chat
+function updateModelDisplay(){
+  const sel = document.getElementById('modelSelect');
+  const opt = sel.options[sel.selectedIndex];
+  // Muestra el texto visible de la opción (ej: "Groq oss-gpt-20B")
+  document.getElementById('currentModelDisplay').textContent = opt.textContent;
+}
+
+const EXT = { python:"py", javascript:"js", typescript:"ts", html:"html", cpp:"cpp", json:"json" };
+
+// ===== INIT =====
+window.onload = ()=>{
+  document.getElementById('groqKey').value = localStorage.getItem('groq_key')||"";
+  updateModelDisplay();
+  document.getElementById('modelSelect').addEventListener('change', updateModelDisplay);
+};
+
+function saveKeys(){
+  localStorage.setItem('groq_key', document.getElementById('groqKey').value.trim());
+  alert("Key guardada!");
+}
+
+// ===== MONACO =====
+require.config({paths:{'vs':'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs'}});
+require(['vs/editor/editor.main'],()=>{
+  editor = monaco.editor.create(document.getElementById('monaco'),{
+    value:"# Escribe código o pide al chat que escriba por ti\ndef fibonacci(n):\n    pass\n",
+    language:'python', theme:'vs-dark', fontSize:14, minimap:{enabled:false}, automaticLayout:true
+  });
+  
+  // Ghost text provider
+  const prov={
+    provideInlineCompletions:async(m,p)=>{ 
+      if(!ghost) return {items:[]}; 
+      return {items:[{insertText:ghost, range:new monaco.Range(p.lineNumber,p.column,p.lineNumber,p.column)}]} 
+    },
+    freeInlineCompletions:()=>{}
+  };
+  ['python','javascript','typescript','cpp','html'].forEach(l=>
+    monaco.languages.registerInlineCompletionsProvider(l,prov)
+  );
+  
+  let t;
+  editor.onDidChangeModelContent(()=>{ clearTimeout(t); t=setTimeout(runCopilot,900); });
+});
+
+function setLang(){
+  const lang = document.getElementById('langSelect').value;
+  if(editor) monaco.editor.setModelLanguage(editor.getModel(), lang);
+  document.getElementById('fileName').textContent = "main." + (EXT[lang]||"txt");
+}
+
+// ===== DESCARGA / EJECUCIÓN =====
+function downloadCode(){
+  const lang = document.getElementById('langSelect').value;
+  const blob = new Blob([editor.getValue()], {type:"text/plain;charset=utf-8"});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = "main." + (EXT[lang]||"txt");
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function runCode(){
+  const lang = document.getElementById('langSelect').value;
+  const frame = document.getElementById('runner');
+  const code = editor.getValue();
+  if(lang==="html"){ frame.classList.remove('hidden'); frame.srcdoc = code; }
+  else if(lang==="javascript"){
+    frame.classList.remove('hidden');
+    frame.srcdoc = `<body style="font-family:monospace;background:#111;color:#0f0;padding:8px"><script>console.log=(...a)=>document.body.innerHTML+=a.join(' ')+'<br>';<\/script><script>${code.replace(/<\/script>/g,'<\\/script>')}<\/script></body>`;
+  } else alert("Solo JS y HTML se ejecutan aquí. Descarga y corre Python localmente.");
+}
+
+// ===== AI CALL (UNIFICADO: mismo modelo para todo) =====
+async function callAI(prompt, system){
+  const cfg = MODELS[document.getElementById('modelSelect').value];
+  const key = localStorage.getItem('groq_key') || document.getElementById('groqKey').value;
+  if(!key) throw "Pon tu gsk_... Groq key arriba";
+  
+  const msgs = [];
+  if(system) msgs.push({role:"system", content:system});
+  msgs.push({role:"user", content:prompt});
+  
+  const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method:"POST",
+    headers:{"Content-Type":"application/json", Authorization:`Bearer ${key}`},
+    body:JSON.stringify({model:cfg.model, messages:msgs, max_tokens:4096, temperature:0.2})
+  });
+  const d = await r.json();
+  if(d.error) throw d.error.message;
+  return d.choices[0].message.content;
+}
+
+// ===== AUTOCOMPLETADO (usa el mismo modelo del selector) =====
+async function runCopilot(){
+  try{
+    const code = editor.getValue();
+    if(code.length<10) return;
+    document.getElementById('ghostStatus').textContent="Pensando...";
+    
+    const out = await callAI(
+      "Continúa exactamente este código, solo el fragmento que sigue:\n" + code.slice(-600),
+      "Eres un asistente de autocompletado de código. Responde solo código, sin explicaciones."
+    );
+    
+    ghost = out.slice(0,150).trim();
+    if(ghost){
+      editor.trigger('k','editor.action.inlineSuggest.trigger',{});
+      document.getElementById('ghostStatus').textContent="TAB para aceptar";
+    }
+  }catch(e){
+    document.getElementById('ghostStatus').textContent=String(e).slice(0,60);
+  }
+}
+
+// ===== CHAT (usa el MISMO modelo del selector) =====
+function extractCode(text){
+  const m = text.match(/```(?:\w+)?\n([\s\S]*?)```/);
+  return m ? m[1].trim() : null;
+}
+
+function insertIntoEditor(code){
+  const sel = editor.getSelection();
+  if(!sel || (sel.startLineNumber===1 && sel.endColumn===1 && editor.getValue()==="")){
+    editor.setValue(code);
+  } else if(sel.isEmpty()){
+    editor.executeEdits("chat",[{range:sel, text:code+"\n"}]);
+  } else {
+    editor.executeEdits("chat",[{range:sel, text:code}]);
+  }
+  editor.focus();
+}
+
+async function askChat(){
+  const input = document.getElementById('chatInput');
+  const q = input.value.trim();
+  if(!q) return;
+  
+  const chat = document.getElementById('chat');
+  const sel = editor.getModel().getValueInRange(editor.getSelection());
+  const ctx = sel || editor.getValue().slice(-1500);
+  const lang = document.getElementById('langSelect').value;
+  
+  // Tu mensaje
+  chat.innerHTML += `<div class="bg-blue-600 text-white p-3 rounded-lg ml-6">${q.replace(/</g,'&lt;')}</div>`;
+  input.value="";
+  
+  // Loading
+  const load = document.createElement('div');
+  load.className="bg-[#2d2d2d] p-3 rounded-lg";
+  load.textContent="Escribiendo...";
+  chat.appendChild(load);
+  chat.scrollTop = chat.scrollHeight;
+  
+  try{
+    const system = `Eres un asistente de código de Sabina. Si piden código, respóndelo en un bloque \`\`\`${lang}\`\`\`. Responde breve en español fuera del código.`;
+    
+    // MISMA función callAI que el autocompletado, mismo modelo
+    const ans = await callAI(
+      `Lenguaje actual: ${lang}\nCódigo actual:\n${ctx}\n\nPetición: ${q}`,
+      system
+    );
+    
+    const code = extractCode(ans);
+    const div = document.createElement('div');
+    div.className="bg-[#2d2d2d] p-3 rounded-lg space-y-2";
+    
+    const pre = document.createElement('pre');
+    pre.className="whitespace-pre-wrap";
+    pre.textContent = code ? ans.replace(/```(\w+)?\n?/g,'').replace(/```/g,'').trim() : ans;
+    div.appendChild(pre);
+    
+    if(code){
+      const btn = document.createElement('button');
+      btn.className="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded text-xs font-bold";
+      btn.innerHTML='<i class="bi bi-braces"></i> → Insertar en editor';
+      btn.onclick = ()=>{ insertIntoEditor(code); btn.textContent="✔ Insertado"; };
+      div.appendChild(btn);
+      
+      if(document.getElementById('autoInsert').checked){
+        insertIntoEditor(code);
+        btn.textContent="✔ Insertado (auto)";
+      }
+    }
+    
+    load.replaceWith(div);
+    chat.scrollTop = chat.scrollHeight;
+  }catch(e){
+    load.textContent="Error: "+e;
+  }
+}
+
+document.getElementById('chatInput').addEventListener('keydown', e=>{
+  if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); askChat(); }
+});
+</script>
+</body>
+</html>
